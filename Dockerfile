@@ -9,10 +9,13 @@ COPY go.mod go.sum ./
 
 # whatsmeow agora vem do proxy oficial (go.mau.fi/whatsmeow, sem replace local) —
 # não há mais submódulo whatsmeow-lib para copiar.
-RUN go mod download
+# go.sum pode estar defasado (whatsmeow bumpado no go.mod sem Go local): o `tidy` depois do COPY acerta.
+RUN go mod download || true
 
 # Copiar o restante do código
 COPY . .
+
+RUN go mod tidy && go mod download
 
 ARG VERSION=dev
 RUN CGO_ENABLED=1 go build -ldflags "-X main.version=${VERSION}" -o server ./cmd/evolution-go
