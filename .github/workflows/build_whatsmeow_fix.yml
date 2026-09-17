@@ -1,5 +1,6 @@
 name: Build (whatsmeow-fix)
-# So COMPILA a imagem (sem push): e o jeito de ver o erro de build sem Go/Docker na maquina.
+# Compila e publica a imagem no GHCR (ghcr.io/filipwallves/evolution-go:whatsmeow-fix) — e o que o
+# Coolify puxa. Pacote publicado com GITHUB_TOKEN a partir de repo publico herda a visibilidade publica.
 on:
   push:
     branches: [ whatsmeow-fix ]
@@ -9,14 +10,29 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build (linux/amd64, sem push)
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Data da imagem
+        id: d
+        run: echo "data=$(date -u +%Y%m%d)" >> $GITHUB_OUTPUT
+      - name: Build + push (linux/amd64)
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
-          push: false
+          push: true
+          tags: |
+            ghcr.io/filipwallves/evolution-go:whatsmeow-fix
+            ghcr.io/filipwallves/evolution-go:0.7.2-whatsmeow-${{ steps.d.outputs.data }}-${{ github.sha }}
           build-args: |
             VERSION=0.7.2-whatsmeow-fix
+          labels: |
+            org.opencontainers.image.source=https://github.com/FilipwAllves/evolution-go
