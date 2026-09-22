@@ -1,13 +1,25 @@
 name: Build (whatsmeow-fix)
-# Compila e publica a imagem no GHCR (ghcr.io/filipwallves/evolution-go:whatsmeow-fix) — e o que o
-# Coolify puxa. Pacote publicado com GITHUB_TOKEN a partir de repo publico herda a visibilidade publica.
+# Compila e publica a imagem no GHCR (ghcr.io/filipwallves/evolution-go:whatsmeow-fix) — é o que o
+# Coolify puxa. Pacote publicado com GITHUB_TOKEN a partir de repo público herda a visibilidade pública.
+# 22/09/2026: MULTI-ARCH. O host do Coolify é ARM64 (log do Postgres: "on aarch64-unknown-linux-musl");
+# a imagem só amd64 não roda lá e o compose up derrubava o serviço INTEIRO (incidente de 17/09).
+# Cada arquitetura compila no runner NATIVO (CGO + libjpeg/libwebp — QEMU seria lento demais) e o job
+# final junta as duas numa tag só (manifest list), igual à imagem oficial evoapicloud/evolution-go.
 on:
   push:
     branches: [ whatsmeow-fix ]
   workflow_dispatch:
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -20,19 +32,40 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Data da imagem
-        id: d
-        run: echo "data=$(date -u +%Y%m%d)" >> $GITHUB_OUTPUT
-      - name: Build + push (linux/amd64)
+      - name: Build + push (linux/${{ matrix.arch }})
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: true
-          tags: |
-            ghcr.io/filipwallves/evolution-go:whatsmeow-fix
-            ghcr.io/filipwallves/evolution-go:0.7.2-whatsmeow-${{ steps.d.outputs.data }}-${{ github.sha }}
+          provenance: false
+          tags: ghcr.io/filipwallves/evolution-go:whatsmeow-fix-${{ matrix.arch }}
           build-args: |
             VERSION=0.7.2-whatsmeow-fix
           labels: |
             org.opencontainers.image.source=https://github.com/FilipwAllves/evolution-go
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Data da imagem
+        id: d
+        run: echo "data=$(date -u +%Y%m%d)" >> $GITHUB_OUTPUT
+      - name: Junta amd64 + arm64 numa tag so
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/filipwallves/evolution-go:whatsmeow-fix \
+            -t ghcr.io/filipwallves/evolution-go:0.7.2-whatsmeow-${{ steps.d.outputs.data }}-${{ github.sha }} \
+            ghcr.io/filipwallves/evolution-go:whatsmeow-fix-amd64 \
+            ghcr.io/filipwallves/evolution-go:whatsmeow-fix-arm64
+          docker buildx imagetools inspect ghcr.io/filipwallves/evolution-go:whatsmeow-fix
