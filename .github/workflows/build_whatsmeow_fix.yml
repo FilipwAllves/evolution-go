@@ -1,10 +1,15 @@
 name: Build (whatsmeow-fix)
-# Compila e publica a imagem no GHCR (ghcr.io/filipwallves/evolution-go:whatsmeow-fix) — é o que o
+# Compila e publica a imagem no GHCR (ghcr.io/filipwallves/evolution-go) — é o que o
 # Coolify puxa. Pacote publicado com GITHUB_TOKEN a partir de repo público herda a visibilidade pública.
 # 22/09/2026: MULTI-ARCH. O host do Coolify é ARM64 (log do Postgres: "on aarch64-unknown-linux-musl");
 # a imagem só amd64 não roda lá e o compose up derrubava o serviço INTEIRO (incidente de 17/09).
 # Cada arquitetura compila no runner NATIVO (CGO + libjpeg/libwebp — QEMU seria lento demais) e o job
 # final junta as duas numa tag só (manifest list), igual à imagem oficial evoapicloud/evolution-go.
+# 12/10/2026: o push NÃO move mais a tag :whatsmeow-fix. Ela fica congelada no build de 22/09 (o que roda
+# em produção) e serve de âncora de rollback. Cada build publica só a tag IMUTÁVEL
+# 0.7.2-whatsmeow-<data UTC>-<sha>; a troca em produção aponta o compose para ela (evogo_trocar_imagem.py).
+# Motivo: com a tag móvel, um restart do Coolify que fizesse pull (ou um docker cleanup que apagasse a
+# imagem em cache) subiria o build novo em produção sem ninguém olhando.
 on:
   push:
     branches: [ whatsmeow-fix ]
@@ -61,11 +66,12 @@ jobs:
       - name: Data da imagem
         id: d
         run: echo "data=$(date -u +%Y%m%d)" >> $GITHUB_OUTPUT
-      - name: Junta amd64 + arm64 numa tag so
+      - name: Junta amd64 + arm64 numa tag so (imutavel - a tag whatsmeow-fix fica congelada)
         run: |
+          IMG=ghcr.io/filipwallves/evolution-go:0.7.2-whatsmeow-${{ steps.d.outputs.data }}-${{ github.sha }}
           docker buildx imagetools create \
-            -t ghcr.io/filipwallves/evolution-go:whatsmeow-fix \
-            -t ghcr.io/filipwallves/evolution-go:0.7.2-whatsmeow-${{ steps.d.outputs.data }}-${{ github.sha }} \
+            -t "$IMG" \
             ghcr.io/filipwallves/evolution-go:whatsmeow-fix-amd64 \
             ghcr.io/filipwallves/evolution-go:whatsmeow-fix-arm64
-          docker buildx imagetools inspect ghcr.io/filipwallves/evolution-go:whatsmeow-fix
+          docker buildx imagetools inspect "$IMG"
+          echo "Imagem publicada: \`$IMG\`" >> "$GITHUB_STEP_SUMMARY"
