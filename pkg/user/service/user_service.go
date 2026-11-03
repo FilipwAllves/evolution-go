@@ -3,6 +3,7 @@ package user_service
 import (
 	"github.com/evolution-foundation/evolution-go/pkg/safemap"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"github.com/evolution-foundation/evolution-go/pkg/utils"
 	whatsmeow_service "github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -519,7 +522,7 @@ func (u *userService) SetProfileName(data *SetProfileNameStruct, instance *insta
 		return false, err
 	}
 
-	err = client.SetGroupName(context.Background(), types.EmptyJID, data.Name)
+	err = client.SendAppState(context.Background(), appstate.BuildSettingPushName(data.Name))
 	if err != nil {
 		return false, err
 	}
@@ -527,20 +530,73 @@ func (u *userService) SetProfileName(data *SetProfileNameStruct, instance *insta
 	return true, nil
 }
 
+// mutationUpdateTextStatus is WhatsApp Web's WAWebMexUpdateTextStatusJobMutation (xwa2_update_text_status).
+const mutationUpdateTextStatus = "9152604461510864"
+
 func (u *userService) SetProfileStatus(data *SetProfileStatusStruct, instance *instance_model.Instance) (bool, error) {
 	client, err := u.ensureClientConnected(instance.Id)
 	if err != nil {
 		return false, err
 	}
 
-	// whatsmeow 08/2026: SetStatusMessage recebe types.SetStatusInput (texto + emoji/duracao opcionais)
-	status := data.Status
-	err = client.SetStatusMessage(context.Background(), types.SetStatusInput{Text: &status})
-	if err != nil {
-		return false, err
+	// Same order as WhatsApp Web: the text status mutation, then the legacy status IQ (read by older
+	// clients and by /user/info). The server accepts the legacy IQ alone, but current phone apps ignore
+	// it, so only the mutation counts as success.
+	ctx := context.Background()
+	mexErr := setTextStatus(ctx, client, data.Status)
+	legacyErr := setLegacyStatus(ctx, client, data.Status)
+	if mexErr != nil {
+		u.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Text status mutation failed: %v (legacy status IQ error: %v)", instance.Id, mexErr, legacyErr)
+		if legacyErr == nil {
+			return false, fmt.Errorf("text status mutation failed: %w (the legacy status IQ was accepted, but current phone apps may not show it)", mexErr)
+		}
+		return false, fmt.Errorf("text status mutation failed: %w; the legacy status IQ failed too: %v", mexErr, legacyErr)
+	}
+	if legacyErr != nil {
+		u.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] About set; legacy status IQ failed (non-fatal): %v", instance.Id, legacyErr)
 	}
 
 	return true, nil
+}
+
+// setTextStatus sets an About that never expires. That needs ephemeral_duration_sec = -1, what WhatsApp
+// Web sends: whatsmeow's SetStatusMessage always sends 0, and the server answers a non-empty text with
+// a 0 duration with "graphql error: 400 Bad Request (CRITICAL)".
+func setTextStatus(ctx context.Context, client *whatsmeow.Client, text string) error {
+	data, err := client.DangerousInternals().SendMexIQ(ctx, mutationUpdateTextStatus, map[string]any{
+		"input": map[string]any{
+			"text":                   text,
+			"ephemeral_duration_sec": -1,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		UpdateTextStatus struct {
+			Result string `json:"result"`
+		} `json:"xwa2_update_text_status"`
+	}
+	if err = json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("unexpected xwa2_update_text_status response %q: %w", data, err)
+	}
+	if resp.UpdateTextStatus.Result != "SUCCESS" {
+		return fmt.Errorf("xwa2_update_text_status did not return SUCCESS: %s", data)
+	}
+	return nil
+}
+
+func setLegacyStatus(ctx context.Context, client *whatsmeow.Client, text string) error {
+	_, err := client.DangerousInternals().SendIQ(ctx, whatsmeow.DangerousInfoQuery{
+		Namespace: "status",
+		Type:      "set",
+		To:        types.ServerJID,
+		Content: []waBinary.Node{{
+			Tag:     "status",
+			Content: []byte(text),
+		}},
+	})
+	return err
 }
 
 func NewUserService(
