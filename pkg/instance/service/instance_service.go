@@ -268,15 +268,12 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
 			IsProxy:       false,
 		}
 
-		if instance.Proxy != "" || i.config.ProxyHost != "" {
+		// 17/11/2026: IsProxy é só informativo — o StartClient decide e aplica a proxy (sem saída direta).
+		if i.config.ProxyHost != "" {
+			clientData.IsProxy = true
+		} else if t := strings.TrimSpace(instance.Proxy); t != "" && t != "null" && t != "{}" {
 			var proxyConfig ProxyConfig
-			err := json.Unmarshal([]byte(instance.Proxy), &proxyConfig)
-			if err != nil {
-				i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error unmarshalling proxy config: %v", instance.Id, err)
-				return nil, "", "", err
-			}
-
-			if proxyConfig.Host != "" || i.config.ProxyHost != "" {
+			if json.Unmarshal([]byte(t), &proxyConfig) == nil && proxyConfig.Host != "" {
 				clientData.IsProxy = true
 			}
 		}
@@ -726,15 +723,12 @@ func (i instances) ForceReconnect(instanceId string, number string) error {
 		IsProxy:       false,
 	}
 
-	if instance.Proxy != "" || i.config.ProxyHost != "" {
+	// 17/11/2026: IsProxy é só informativo — o StartClient decide e aplica a proxy (sem saída direta).
+	if i.config.ProxyHost != "" {
+		clientData.IsProxy = true
+	} else if t := strings.TrimSpace(instance.Proxy); t != "" && t != "null" && t != "{}" {
 		var proxyConfig ProxyConfig
-		err := json.Unmarshal([]byte(instance.Proxy), &proxyConfig)
-		if err != nil {
-			i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error unmarshalling proxy config: %v", instance.Id, err)
-			return err
-		}
-
-		if proxyConfig.Host != "" || i.config.ProxyHost != "" {
+		if json.Unmarshal([]byte(t), &proxyConfig) == nil && proxyConfig.Host != "" {
 			clientData.IsProxy = true
 		}
 	}

@@ -488,51 +488,20 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	w.clientPointer.Set(cd.Instance.Id, client)
 
-	if cd.IsProxy {
-		var proxyConfig ProxyConfig
-		err := json.Unmarshal([]byte(cd.Instance.Proxy), &proxyConfig)
-		if err != nil {
-			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] error unmarshalling proxy config", cd.Instance.Id)
+	// 17/11/2026 (Talkline): proxy OBRIGATÓRIO. A proxy é decidida aqui, num ponto só, para TODA conexão
+	// (startup, /instance/connect, reconnect, pareamento). Se a instância ou o ambiente (PROXY_*) definem
+	// uma proxy e ela não puder ser aplicada, a instância NÃO conecta — nunca sai pelo IP do servidor.
+	proxyAddress, proxyRequired, proxyErr := w.resolveProxyAddress(cd.Instance.Proxy)
+	if proxyRequired {
+		if proxyErr != nil {
+			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Proxy obrigatória inválida, NÃO conectando (sem saída direta): %v", cd.Instance.Id, proxyErr)
 			return
 		}
-
-		proxyProtocol := proxyConfig.Protocol
-		proxyHost := proxyConfig.Host
-		proxyPort := proxyConfig.Port
-		proxyUsername := proxyConfig.Username
-		proxyPassword := proxyConfig.Password
-
-		if proxyConfig.Host == "" {
-			proxyHost = w.config.ProxyHost
+		if err := client.SetProxyAddress(proxyAddress); err != nil {
+			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Falha ao aplicar a proxy obrigatória, NÃO conectando (sem saída direta): %v", cd.Instance.Id, err)
+			return
 		}
-
-		if proxyConfig.Port == "" {
-			proxyPort = w.config.ProxyPort
-		}
-
-		if proxyConfig.Protocol == "" {
-			proxyProtocol = w.config.ProxyProtocol
-		}
-
-		if proxyConfig.Username == "" {
-			proxyUsername = w.config.ProxyUsername
-		}
-
-		if proxyConfig.Password == "" {
-			proxyPassword = w.config.ProxyPassword
-		}
-
-		proxyAddress, err := utils.BuildProxyAddress(proxyProtocol, proxyHost, proxyPort, proxyUsername, proxyPassword)
-		if err != nil {
-			w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Proxy error, continuing without proxy: %v", cd.Instance.Id, err)
-		} else {
-			err = client.SetProxyAddress(proxyAddress)
-			if err != nil {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Proxy error, continuing without proxy: %v", cd.Instance.Id, err)
-			} else {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Proxy enabled (%s)", cd.Instance.Id, utils.NormalizeProxyProtocol(proxyProtocol, proxyPort))
-			}
-		}
+		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Proxy enabled (%s)", cd.Instance.Id, proxyAddressSemSenha(proxyAddress))
 	}
 
 	client.EnableAutoReconnect = false
@@ -589,18 +558,9 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 					return
 				}
 			} else if strings.Contains(err.Error(), "username/password authentication failed") {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Proxy authentication failed, attempting to connect without proxy", cd.Instance.Id)
-
-				// Desabilita o proxy
-				client.SetProxy(nil)
-
-				// Tenta conectar sem proxy
-				err = client.Connect()
-				if err != nil {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect even without proxy: %v", cd.Instance.Id, err)
-					return
-				}
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Successfully connected without proxy", cd.Instance.Id)
+				// 17/11/2026: sem fallback para conexão direta — a linha fica desconectada até a proxy voltar.
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Proxy recusou usuário/senha, NÃO conectando (sem saída direta): %v", cd.Instance.Id, err)
+				return
 			} else {
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect: %v", cd.Instance.Id, err)
 				return
@@ -624,18 +584,9 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 					return
 				}
 			} else if strings.Contains(err.Error(), "username/password authentication failed") {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Proxy authentication failed during QR connection, attempting without proxy", cd.Instance.Id)
-
-				// Desabilita o proxy
-				client.SetProxy(nil)
-
-				// Tenta conectar sem proxy
-				err = client.Connect()
-				if err != nil {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect even without proxy: %v", cd.Instance.Id, err)
-					return
-				}
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Successfully connected without proxy", cd.Instance.Id)
+				// 17/11/2026: sem fallback para conexão direta — a linha fica desconectada até a proxy voltar.
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Proxy recusou usuário/senha, NÃO conectando (sem saída direta): %v", cd.Instance.Id, err)
+				return
 			} else {
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect: %v", cd.Instance.Id, err)
 				return
@@ -2408,7 +2359,7 @@ func (w whatsmeowService) StartInstance(instanceId string) error {
 		return err
 	}
 
-	if instance.Proxy == "" && w.config.ProxyHost != "" && w.config.ProxyPort != "" && w.config.ProxyUsername != "" && w.config.ProxyPassword != "" {
+	if proxyVazia(instance.Proxy) && w.config.ProxyHost != "" && w.config.ProxyPort != "" && w.config.ProxyUsername != "" && w.config.ProxyPassword != "" {
 		proxyConfig := ProxyConfig{
 			Protocol: utils.NormalizeProxyProtocol(w.config.ProxyProtocol, w.config.ProxyPort),
 			Host:     w.config.ProxyHost,
@@ -2473,17 +2424,8 @@ func (w whatsmeowService) StartInstance(instanceId string) error {
 		IsProxy:       false,
 	}
 
-	if instance.Proxy != "" {
-		var proxyConfig ProxyConfig
-		err := json.Unmarshal([]byte(instance.Proxy), &proxyConfig)
-		if err != nil {
-			w.loggerWrapper.GetLogger(instanceId).LogError("[%s] error unmarshalling proxy config", instanceId)
-			return err
-		}
-
-		if proxyConfig.Host != "" {
-			clientData.IsProxy = true
-		}
+	if _, required, _ := w.resolveProxyAddress(instance.Proxy); required {
+		clientData.IsProxy = true
 	}
 
 	go w.StartClient(clientData)
@@ -2974,4 +2916,57 @@ func cleanSenderID(senderID string) string {
 		}
 	}
 	return senderID
+}
+
+// proxyVazia: instância sem proxy própria ("" ou "null", que é o que o create grava quando não vem proxy).
+func proxyVazia(raw string) bool {
+	t := strings.TrimSpace(raw)
+	return t == "" || t == "null" || t == "{}"
+}
+
+// resolveProxyAddress junta a proxy da instância com a global (PROXY_* do ambiente): campo vazio na
+// instância herda o global. required=true quando há host em qualquer um dos dois — aí a conexão SÓ
+// pode sair pela proxy (o chamador não conecta se err != nil).
+func (w whatsmeowService) resolveProxyAddress(raw string) (address string, required bool, err error) {
+	var pc ProxyConfig
+	if !proxyVazia(raw) {
+		if e := json.Unmarshal([]byte(raw), &pc); e != nil {
+			if w.config.ProxyHost == "" {
+				return "", true, fmt.Errorf("proxy da instância ilegível: %v", e)
+			}
+			pc = ProxyConfig{} // JSON quebrado + global definido: usa o global inteiro
+		}
+	}
+	if pc.Host == "" {
+		pc.Host = w.config.ProxyHost
+	}
+	if pc.Port == "" {
+		pc.Port = w.config.ProxyPort
+	}
+	if pc.Protocol == "" {
+		pc.Protocol = w.config.ProxyProtocol
+	}
+	if pc.Username == "" {
+		pc.Username = w.config.ProxyUsername
+	}
+	if pc.Password == "" {
+		pc.Password = w.config.ProxyPassword
+	}
+	if strings.TrimSpace(pc.Host) == "" {
+		return "", false, nil
+	}
+	address, err = utils.BuildProxyAddress(pc.Protocol, pc.Host, pc.Port, pc.Username, pc.Password)
+	return address, true, err
+}
+
+// proxyAddressSemSenha: para log — esquema://host:porta, nunca usuário/senha.
+func proxyAddressSemSenha(address string) string {
+	if i := strings.Index(address, "://"); i >= 0 {
+		resto := address[i+3:]
+		if j := strings.LastIndex(resto, "@"); j >= 0 {
+			resto = resto[j+1:]
+		}
+		return address[:i] + "://" + resto
+	}
+	return "?"
 }

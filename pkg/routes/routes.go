@@ -1,8 +1,6 @@
 package routes
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -59,8 +57,9 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 
 	eng.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
+	// 17/11/2026: favicon da Talkline (o .ico pedido direto pelo navegador cai no png).
 	eng.GET("/favicon.ico", func(c *gin.Context) {
-		c.Status(http.StatusNoContent)
+		c.File("manager/dist/assets/talkline-icone-192.png")
 	})
 
 	// Rotas para o gerenciador React (sem autenticação)
